@@ -1,7 +1,5 @@
 NeoClip Production
 
-**Zero-cost, profitable-from-day-1 AI video generator**
-
 Generate 10-second viral shorts for FREE, 30-second HD clips for Pro users.
 
 ## 📝 License
