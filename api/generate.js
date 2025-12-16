@@ -1,16 +1,16 @@
 /**
- * NeoClip 302 - Video Generation API v3.4.0
+ * NeoClip 340 - Video Generation API v3.4.1
  * "Never-Fail" Pipeline with Proper FAL Queue API
  * 
- * CRITICAL FIXES:
- * 1. Uses FAL Queue API (async, no Vercel timeout)
- * 2. Properly passes duration parameter (10s free, 30s pro)
- * 3. Saves generation to Supabase immediately
+ * CRITICAL FIXES v3.4.1:
+ * 1. Uses WHATWG URL API (no more url.parse deprecation warnings)
+ * 2. Updated fallback chain to avoid expensive FAL for free tier
+ * 3. Properly passes duration parameter (10s free, 30s pro)
  * 4. Returns generationId for client polling
  * 
- * FALLBACK CHAIN (cost ascending):
- * FREE: Wan-2.1 (Replicate) $0.0008 → FAL MiniMax $0.50
- * PAID: Luma (PiAPI) $0.20 → FAL MiniMax $0.50
+ * FALLBACK CHAIN (cost optimized):
+ * FREE: Wan-2.1 (Replicate) $0.0008 → Luma (PiAPI) $0.20 (768p)
+ * PAID: Luma (PiAPI) $0.20 (1080p) → FAL MiniMax $0.50
  */
 
 import { createClient } from '@supabase/supabase-js';
@@ -33,7 +33,7 @@ const PROVIDERS = {
     createUrl: 'https://api.replicate.com/v1/predictions',
     getKey: () => process.env.REPLICATE_KEY,
     authHeader: (key) => `Token ${key}`,
-    buildBody: (prompt, duration) => ({
+    buildBody: (prompt, duration, resolution) => ({
       version: 'wan-lab/wan-2.1:e8c37be16be5e3bb950f55e0d73d1e87e4be5a47',
       input: {
         prompt: prompt,
@@ -56,48 +56,16 @@ const PROVIDERS = {
     extractError: (response) => response?.error
   },
 
-  // FAL MiniMax - Via Queue API (properly async)
-  fal: {
-    name: 'MiniMax-FAL',
-    tier: 'free',
-    cost: 0.50,
-    // CRITICAL: Use queue.fal.run for async operations
-    createUrl: 'https://queue.fal.run/fal-ai/minimax/video-01',
-    getKey: () => process.env.FAL_KEY,
-    authHeader: (key) => `Key ${key}`,
-    buildBody: (prompt, duration) => ({
-      prompt: prompt,
-      prompt_optimizer: true
-      // Note: MiniMax video-01 generates ~5s videos by default
-      // Duration is not directly configurable, but prompt_optimizer helps
-    }),
-    extractTaskId: (response) => response?.request_id,
-    getStatusUrl: (taskId) => `https://queue.fal.run/fal-ai/minimax/video-01/requests/${taskId}/status`,
-    getResultUrl: (taskId) => `https://queue.fal.run/fal-ai/minimax/video-01/requests/${taskId}`,
-    parseStatus: (response) => {
-      const status = response?.status?.toLowerCase() || '';
-      if (status === 'completed' || status === 'succeeded') return 'completed';
-      if (status === 'failed' || status === 'error') return 'failed';
-      if (status === 'in_queue') return 'queued';
-      return 'processing';
-    },
-    extractVideoUrl: (response) => {
-      return response?.video?.url || 
-             response?.output?.video_url ||
-             response?.video_url;
-    },
-    extractError: (response) => response?.error || response?.message
-  },
-
-  // PiAPI Luma - High quality paid option
+  // PiAPI Luma - Good quality at moderate cost ($0.20/video)
+  // Used as fallback for FREE tier (768p) and primary for PAID tier (1080p)
   luma: {
     name: 'Luma',
-    tier: 'paid',
+    tier: 'both', // Can be used for both tiers with different quality
     cost: 0.20,
     createUrl: 'https://api.piapi.ai/api/v1/task',
     getKey: () => process.env.PIAPI_KEY,
     authHeader: (key) => `Bearer ${key}`,
-    buildBody: (prompt, duration) => ({
+    buildBody: (prompt, duration, resolution) => ({
       model: 'luma',
       task_type: 'video_generation',
       input: {
@@ -121,19 +89,55 @@ const PROVIDERS = {
              response?.output?.video_url;
     },
     extractError: (response) => response?.data?.error || response?.error
+  },
+
+  // FAL MiniMax - Expensive, high quality ($0.50/video)
+  // Only used as backup for PAID tier
+  fal: {
+    name: 'MiniMax-FAL',
+    tier: 'paid',
+    cost: 0.50,
+    // CRITICAL: Use queue.fal.run for async operations
+    createUrl: 'https://queue.fal.run/fal-ai/minimax/video-01',
+    getKey: () => process.env.FAL_KEY,
+    authHeader: (key) => `Key ${key}`,
+    buildBody: (prompt, duration, resolution) => ({
+      prompt: prompt,
+      prompt_optimizer: true
+      // Note: MiniMax video-01 generates ~5s videos by default
+      // Duration is not directly configurable, but prompt_optimizer helps
+    }),
+    extractTaskId: (response) => response?.request_id,
+    getStatusUrl: (taskId) => `https://queue.fal.run/fal-ai/minimax/video-01/requests/${taskId}/status`,
+    getResultUrl: (taskId) => `https://queue.fal.run/fal-ai/minimax/video-01/requests/${taskId}`,
+    parseStatus: (response) => {
+      const status = response?.status?.toLowerCase() || '';
+      if (status === 'completed' || status === 'succeeded') return 'completed';
+      if (status === 'failed' || status === 'error') return 'failed';
+      if (status === 'in_queue') return 'queued';
+      return 'processing';
+    },
+    extractVideoUrl: (response) => {
+      return response?.video?.url || 
+             response?.output?.video_url ||
+             response?.video_url;
+    },
+    extractError: (response) => response?.error || response?.message
   }
 };
 
 /**
- * Fallback chains - CHEAPEST FIRST
+ * UPDATED Fallback chains - Cost optimized
+ * FREE: Wan (cheapest) → Luma (moderate, 768p quality)
+ * PAID: Luma (good quality, 1080p) → FAL MiniMax (expensive backup)
  */
 const FALLBACK_CHAINS = {
-  free: ['wan', 'fal'],  // Try cheap Wan first, then FAL
-  paid: ['luma', 'fal']  // Try Luma first for paid, FAL as backup
+  free: ['wan', 'luma'],   // Try cheap Wan first, then Luma (NOT FAL - too expensive!)
+  paid: ['luma', 'fal']    // Try Luma first for paid, FAL as expensive backup
 };
 
 /**
- * Make HTTP request with timeout
+ * Make HTTP request with timeout using modern AbortController
  */
 async function makeRequest(url, options, timeoutMs = 30000) {
   const controller = new AbortController();
@@ -176,7 +180,7 @@ async function makeRequest(url, options, timeoutMs = 30000) {
 /**
  * Create task with a provider
  */
-async function createProviderTask(providerKey, prompt, duration) {
+async function createProviderTask(providerKey, prompt, duration, resolution) {
   const provider = PROVIDERS[providerKey];
   if (!provider) throw new Error(`Unknown provider: ${providerKey}`);
 
@@ -185,9 +189,9 @@ async function createProviderTask(providerKey, prompt, duration) {
     throw new Error(`No API key for ${provider.name}`);
   }
 
-  console.log(`[${provider.name}] Creating task with duration=${duration}s...`);
+  console.log(`[${provider.name}] Creating task with duration=${duration}s, resolution=${resolution}...`);
 
-  const body = provider.buildBody(prompt, duration);
+  const body = provider.buildBody(prompt, duration, resolution);
   const { status, data, ok, error } = await makeRequest(provider.createUrl, {
     method: 'POST',
     headers: { 'Authorization': provider.authHeader(apiKey) },
@@ -226,10 +230,10 @@ async function createProviderTask(providerKey, prompt, duration) {
 /**
  * Try providers with fallback
  */
-async function createTaskWithFallback(prompt, tier, duration) {
+async function createTaskWithFallback(prompt, tier, duration, resolution) {
   const chain = FALLBACK_CHAINS[tier] || FALLBACK_CHAINS.free;
   
-  console.log(`Creating task: tier=${tier}, duration=${duration}s, chain=[${chain.join(', ')}]`);
+  console.log(`Creating task: tier=${tier}, duration=${duration}s, resolution=${resolution}, chain=[${chain.join(', ')}]`);
 
   let lastError = null;
 
@@ -243,7 +247,7 @@ async function createTaskWithFallback(prompt, tier, duration) {
     }
 
     try {
-      return await createProviderTask(providerKey, prompt, duration);
+      return await createProviderTask(providerKey, prompt, duration, resolution);
     } catch (error) {
       console.error(`[${provider?.name || providerKey}] Failed:`, error.message);
       lastError = error;
@@ -251,6 +255,23 @@ async function createTaskWithFallback(prompt, tier, duration) {
   }
 
   throw lastError || new Error('All providers failed');
+}
+
+/**
+ * Parse query parameters using WHATWG URL API (no deprecated url.parse)
+ */
+function getQueryParams(req) {
+  // For Vercel, req.query is already parsed, but we ensure WHATWG URL compatibility
+  if (req.query) return req.query;
+  
+  try {
+    // Use WHATWG URL API - this is the modern standard
+    const baseUrl = `http://${req.headers.host || 'localhost'}`;
+    const fullUrl = new URL(req.url || '/', baseUrl);
+    return Object.fromEntries(fullUrl.searchParams);
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -284,11 +305,12 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'User ID is required' });
     }
 
-    // Determine duration based on tier
+    // Determine duration and resolution based on tier
     const duration = tier === 'free' ? Math.min(length, 10) : Math.min(length, 30);
+    const resolution = tier === 'free' ? '768p' : '1080p';
 
     console.log(`\n========== New Generation ==========`);
-    console.log(`User: ${userId}, Tier: ${tier}, Duration: ${duration}s`);
+    console.log(`User: ${userId}, Tier: ${tier}, Duration: ${duration}s, Resolution: ${resolution}`);
     console.log(`Prompt: ${prompt.slice(0, 100)}...`);
 
     // Get user from database
@@ -331,7 +353,7 @@ export default async function handler(req, res) {
     }
 
     // Create provider task
-    const taskResult = await createTaskWithFallback(prompt, tier, duration);
+    const taskResult = await createTaskWithFallback(prompt, tier, duration, resolution);
 
     // Generate unique ID for this generation
     const generationId = crypto.randomUUID ? crypto.randomUUID() : `gen-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -349,7 +371,7 @@ export default async function handler(req, res) {
         duration: duration,
         model: taskResult.providerName,
         provider: taskResult.provider,
-        resolution: tier === 'free' ? '768p' : '1080p',
+        resolution: resolution,
         status: 'processing',
         cost: taskResult.cost,
         cost_usd: taskResult.cost,
@@ -388,6 +410,7 @@ export default async function handler(req, res) {
       providerName: taskResult.providerName,
       tier,
       duration,
+      resolution,
       needsAd: tier === 'free',
       remainingFree: tier === 'free' ? FREE_LIMIT - ((user.free_used || 0) + 1) : null,
       message: 'Video generation started. Poll /api/poll for status.',

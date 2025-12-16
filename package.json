@@ -1,6 +1,6 @@
 {
-  "name": "neoclip302",
-  "version": "3.4.0",
+  "name": "neoclip340",
+  "version": "3.4.1",
   "description": "NeoClip AI - Zero-cost video generation platform",
   "private": true,
   "type": "module",
@@ -31,6 +31,6 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kubanmedia/neoclip302"
+    "url": "https://github.com/kubanmedia/neoclip340"
   }
 }

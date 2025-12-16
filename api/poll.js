@@ -1,12 +1,13 @@
 /**
- * NeoClip 302 - Polling API v3.4.0
+ * NeoClip 340 - Polling API v3.4.1
  * Properly polls provider status and saves completed videos to Supabase
  * 
- * CRITICAL FIXES:
- * 1. Correctly handles both GET method
- * 2. Polls provider API for actual status
- * 3. Saves video_url to Supabase when completed
- * 4. Rolls back usage on failure
+ * CRITICAL FIXES v3.4.1:
+ * 1. Uses WHATWG URL API (no deprecated url.parse)
+ * 2. Correctly handles GET method
+ * 3. Polls provider API for actual status
+ * 4. Saves video_url to Supabase when completed
+ * 5. Rolls back usage on failure
  * 
  * GET /api/poll?generationId=xxx
  */
@@ -109,6 +110,25 @@ const PROVIDERS = {
     }
   }
 };
+
+/**
+ * Parse query parameters using WHATWG URL API (no deprecated url.parse)
+ */
+function getQueryParams(req) {
+  // For Vercel, req.query is already parsed
+  if (req.query && Object.keys(req.query).length > 0) {
+    return req.query;
+  }
+  
+  try {
+    // Use WHATWG URL API - this is the modern standard
+    const baseUrl = `http://${req.headers?.host || 'localhost'}`;
+    const fullUrl = new URL(req.url || '/', baseUrl);
+    return Object.fromEntries(fullUrl.searchParams);
+  } catch {
+    return {};
+  }
+}
 
 /**
  * Make HTTP request with timeout
@@ -230,7 +250,7 @@ async function pollProvider(providerKey, taskId) {
 }
 
 /**
- * Main Handler - Supports both GET
+ * Main Handler - GET only
  */
 export default async function handler(req, res) {
   // CORS headers
@@ -242,14 +262,15 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  // CRITICAL: Accept GET method
+  // CRITICAL: Accept GET method only
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed. Use GET.' });
   }
 
   try {
-    // Get generationId from query params
-    const generationId = req.query?.generationId;
+    // Use WHATWG URL API compatible query parsing
+    const query = getQueryParams(req);
+    const generationId = query.generationId;
 
     if (!generationId) {
       return res.status(400).json({ error: 'generationId is required' });
@@ -329,7 +350,6 @@ export default async function handler(req, res) {
       await supabase
         .from('users')
         .update({
-          total_videos_generated: supabase.rpc ? undefined : 1,
           last_active_at: completedAt
         })
         .eq('id', generation.user_id);

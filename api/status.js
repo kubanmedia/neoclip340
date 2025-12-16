@@ -1,6 +1,10 @@
 /**
- * NeoClip Production - Generation Status API
+ * NeoClip 340 - Generation Status API v3.4.1
  * Check the status of a video generation task
+ * 
+ * CRITICAL FIXES v3.4.1:
+ * - Uses WHATWG URL API (no deprecated url.parse)
+ * - Proper query parameter parsing
  * 
  * SECURITY: All sensitive keys are stored in Vercel Environment Variables
  */
@@ -14,6 +18,25 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const getSupabaseClient = () => {
   return createClient(SUPABASE_URL, SUPABASE_KEY);
 };
+
+/**
+ * Parse query parameters using WHATWG URL API (no deprecated url.parse)
+ */
+function getQueryParams(req) {
+  // For Vercel, req.query is already parsed
+  if (req.query && Object.keys(req.query).length > 0) {
+    return req.query;
+  }
+  
+  try {
+    // Use WHATWG URL API - this is the modern standard
+    const baseUrl = `http://${req.headers?.host || 'localhost'}`;
+    const fullUrl = new URL(req.url || '/', baseUrl);
+    return Object.fromEntries(fullUrl.searchParams);
+  } catch {
+    return {};
+  }
+}
 
 export default async function handler(req, res) {
   // CORS headers
@@ -30,7 +53,9 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { taskId, userId } = req.query;
+    // Use WHATWG URL API compatible query parsing
+    const query = getQueryParams(req);
+    const { taskId, userId } = query;
 
     if (!taskId && !userId) {
       return res.status(400).json({ 

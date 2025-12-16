@@ -1,5 +1,9 @@
 /**
- * NeoClip 302 - Enhanced User Management API
+ * NeoClip 340 - Enhanced User Management API v3.4.1
+ * 
+ * CRITICAL FIXES v3.4.1:
+ * - Uses WHATWG URL API (no deprecated url.parse)
+ * - Proper query parameter parsing
  * 
  * Full OAuth user data collection and management
  * Supports: Google, Apple, Email, Anonymous auth
@@ -41,6 +45,25 @@ const generateReferralCode = () => {
   }
   return code;
 };
+
+/**
+ * Parse query parameters using WHATWG URL API (no deprecated url.parse)
+ */
+function getQueryParams(req) {
+  // For Vercel, req.query is already parsed
+  if (req.query && Object.keys(req.query).length > 0) {
+    return req.query;
+  }
+  
+  try {
+    // Use WHATWG URL API - this is the modern standard
+    const baseUrl = `http://${req.headers?.host || 'localhost'}`;
+    const fullUrl = new URL(req.url || '/', baseUrl);
+    return Object.fromEntries(fullUrl.searchParams);
+  } catch {
+    return {};
+  }
+}
 
 // Main handler
 export default async function handler(req, res) {
@@ -255,9 +278,10 @@ export default async function handler(req, res) {
       });
     }
     
-    // GET - Retrieve User
+    // GET - Retrieve User (using WHATWG URL API)
     if (req.method === 'GET') {
-      const { userId, deviceId, email } = req.query;
+      const query = getQueryParams(req);
+      const { userId, deviceId, email } = query;
       
       if (!userId && !deviceId && !email) {
         return res.status(400).json({
@@ -266,17 +290,17 @@ export default async function handler(req, res) {
         });
       }
       
-      let query = supabase.from('users').select('*');
+      let dbQuery = supabase.from('users').select('*');
       
       if (userId) {
-        query = query.eq('id', userId);
+        dbQuery = dbQuery.eq('id', userId);
       } else if (email) {
-        query = query.eq('email', email);
+        dbQuery = dbQuery.eq('email', email);
       } else if (deviceId) {
-        query = query.eq('device_id', deviceId);
+        dbQuery = dbQuery.eq('device_id', deviceId);
       }
       
-      const { data: user, error } = await query.single();
+      const { data: user, error } = await dbQuery.single();
       
       if (error || !user) {
         return res.status(404).json({
@@ -352,15 +376,15 @@ export default async function handler(req, res) {
       
       updates.updated_at = new Date().toISOString();
       
-      let query = supabase.from('users').update(updates);
+      let updateQuery = supabase.from('users').update(updates);
       
       if (userId) {
-        query = query.eq('id', userId);
+        updateQuery = updateQuery.eq('id', userId);
       } else {
-        query = query.eq('device_id', deviceId);
+        updateQuery = updateQuery.eq('device_id', deviceId);
       }
       
-      const { data: updated, error } = await query.select().single();
+      const { data: updated, error } = await updateQuery.select().single();
       
       if (error) {
         return res.status(500).json({

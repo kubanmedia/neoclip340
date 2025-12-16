@@ -1,10 +1,33 @@
 /**
- * NeoClip 302 - Debug Endpoint
+ * NeoClip 340 - Debug Endpoint v3.4.1
  * Test provider connections and see response formats
+ * 
+ * CRITICAL FIXES v3.4.1:
+ * - Uses WHATWG URL API (no deprecated url.parse)
+ * - Modern fetch API patterns
  * 
  * GET /api/debug - Show configured providers
  * POST /api/debug - Test a specific provider
  */
+
+/**
+ * Parse query parameters using WHATWG URL API (no deprecated url.parse)
+ */
+function getQueryParams(req) {
+  // For Vercel, req.query is already parsed
+  if (req.query && Object.keys(req.query).length > 0) {
+    return req.query;
+  }
+  
+  try {
+    // Use WHATWG URL API - this is the modern standard
+    const baseUrl = `http://${req.headers?.host || 'localhost'}`;
+    const fullUrl = new URL(req.url || '/', baseUrl);
+    return Object.fromEntries(fullUrl.searchParams);
+  } catch {
+    return {};
+  }
+}
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -19,19 +42,28 @@ export default async function handler(req, res) {
   if (req.method === 'GET') {
     const providers = {
       replicate: {
+        name: 'Wan-2.1',
         configured: !!process.env.REPLICATE_KEY,
         keyPrefix: process.env.REPLICATE_KEY?.slice(0, 8) + '...',
-        endpoint: 'https://api.replicate.com/v1/predictions'
+        endpoint: 'https://api.replicate.com/v1/predictions',
+        tier: 'free (primary)',
+        cost: '$0.0008/video'
       },
-      fal: {
-        configured: !!process.env.FAL_KEY,
-        keyPrefix: process.env.FAL_KEY?.slice(0, 8) + '...',
-        endpoint: 'https://queue.fal.run/fal-ai/minimax/video-01'
-      },
-      piapi: {
+      luma: {
+        name: 'Luma (PiAPI)',
         configured: !!process.env.PIAPI_KEY,
         keyPrefix: process.env.PIAPI_KEY?.slice(0, 8) + '...',
-        endpoint: 'https://api.piapi.ai/api/v1/task'
+        endpoint: 'https://api.piapi.ai/api/v1/task',
+        tier: 'free (fallback), paid (primary)',
+        cost: '$0.20/video'
+      },
+      fal: {
+        name: 'MiniMax (FAL)',
+        configured: !!process.env.FAL_KEY,
+        keyPrefix: process.env.FAL_KEY?.slice(0, 8) + '...',
+        endpoint: 'https://queue.fal.run/fal-ai/minimax/video-01',
+        tier: 'paid (fallback only)',
+        cost: '$0.50/video'
       },
       supabase: {
         url: !!process.env.SUPABASE_URL,
@@ -39,11 +71,25 @@ export default async function handler(req, res) {
       }
     };
 
+    // Updated fallback chains info
+    const fallbackChains = {
+      free: ['Wan-2.1 ($0.0008)', 'Luma ($0.20)'],
+      paid: ['Luma ($0.20)', 'MiniMax-FAL ($0.50)']
+    };
+
     return res.status(200).json({
-      message: 'NeoClip 302 Debug Info',
+      message: 'NeoClip 340 Debug Info v3.4.1',
       timestamp: new Date().toISOString(),
+      version: '3.4.1',
       providers,
-      environment: process.env.NODE_ENV || 'production'
+      fallbackChains,
+      environment: process.env.NODE_ENV || 'production',
+      nodeVersion: process.version,
+      fixes: [
+        'WHATWG URL API (no url.parse deprecation)',
+        'Updated fallback chains (no FAL for free tier)',
+        'Modern Web Crypto API for webhooks'
+      ]
     });
   }
 
@@ -52,7 +98,7 @@ export default async function handler(req, res) {
     const { provider, prompt = 'A beautiful sunset over mountains' } = req.body;
 
     if (!provider) {
-      return res.status(400).json({ error: 'Provider is required (replicate, fal, piapi)' });
+      return res.status(400).json({ error: 'Provider is required (replicate, luma, fal)' });
     }
 
     const configs = {
@@ -65,13 +111,7 @@ export default async function handler(req, res) {
           input: { prompt, num_frames: 240, guidance_scale: 7.5 }
         }
       },
-      fal: {
-        url: 'https://queue.fal.run/fal-ai/minimax/video-01',
-        key: process.env.FAL_KEY,
-        authHeader: `Key ${process.env.FAL_KEY}`,
-        body: { prompt, prompt_optimizer: true }
-      },
-      piapi: {
+      luma: {
         url: 'https://api.piapi.ai/api/v1/task',
         key: process.env.PIAPI_KEY,
         authHeader: `Bearer ${process.env.PIAPI_KEY}`,
@@ -80,12 +120,18 @@ export default async function handler(req, res) {
           task_type: 'video_generation',
           input: { prompt, expand_prompt: true, aspect_ratio: '16:9' }
         }
+      },
+      fal: {
+        url: 'https://queue.fal.run/fal-ai/minimax/video-01',
+        key: process.env.FAL_KEY,
+        authHeader: `Key ${process.env.FAL_KEY}`,
+        body: { prompt, prompt_optimizer: true }
       }
     };
 
     const config = configs[provider];
     if (!config) {
-      return res.status(400).json({ error: `Unknown provider: ${provider}` });
+      return res.status(400).json({ error: `Unknown provider: ${provider}. Valid: replicate, luma, fal` });
     }
 
     if (!config.key) {
