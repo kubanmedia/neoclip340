@@ -1,0 +1,47 @@
+{
+  "expo": {
+    "name": "NeoClip AI - Video Generator",
+    "slug": "neoclip-ai",
+    "version": "3.2.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "scheme": "neoclip",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#050510"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.neoclip.ai",
+      "buildNumber": "32",
+      "infoPlist": {
+        "NSCameraUsageDescription": "NeoClip needs camera access for reference images",
+        "NSPhotoLibraryUsageDescription": "NeoClip needs photo library access to save videos",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#050510"
+      },
+      "package": "com.neoclip.ai",
+      "versionCode": 32
+    },
+    "web": {
+      "bundler": "metro",
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "apiBaseUrl": "https://neoclip302.vercel.app"
+    },
+    "owner": "kubanmedia",
+    "description": "Generate viral short videos with AI! 10 FREE clips per month, no credit card needed.",
+    "githubUrl": "https://github.com/kubanmedia/neoclip302",
+    "primaryColor": "#00D9FF",
+    "keywords": ["ai video generator", "video creator", "tiktok videos", "reels maker", "youtube shorts"]
+  }
+}

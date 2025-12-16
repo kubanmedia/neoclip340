@@ -1,0 +1,36 @@
+{
+  "name": "neoclip302",
+  "version": "3.4.0",
+  "description": "NeoClip AI - Zero-cost video generation platform",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "neoclip",
+    "ai",
+    "video",
+    "generator",
+    "vercel",
+    "vite"
+  ],
+  "author": "NeoClip AI",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kubanmedia/neoclip302"
+  }
+}

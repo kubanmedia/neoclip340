@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NeoClip - AI Video Generator | 10 Free Clips/Month</title>
+    <meta name="description" content="Generate viral 10-second shorts for FREE with AI. No credit card, no watermark, unlimited exports. Create TikTok, Reels, and YouTube Shorts instantly.">
+    <meta name="keywords" content="ai video generator, free video maker, tiktok video generator, reels maker, youtube shorts, viral video">
+    
+    <!-- Open Graph -->
+    <meta property="og:title" content="NeoClip - AI Video Generator">
+    <meta property="og:description" content="Generate viral shorts for FREE. 10 clips/month, no watermark.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://neoclip302.vercel.app">
+    
+  <script type="module" crossorigin src="/assets/index-6EjYsMDQ.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-C3n6Vis1.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1 class="title">🎬 NeoClip</h1>
+            <p class="subtitle">AI Video Generator</p>
+            <p class="version">v3.4.0</p>
+        </header>
+
+        <!-- Navigation -->
+        <nav class="nav-bar">
+            <button class="nav-btn active" onclick="showScreen('home')">🏠 Create</button>
+            <button class="nav-btn" onclick="showLibrary()">📚 Library</button>
+        </nav>
+
+        <!-- Stats Section -->
+        <div class="stats-container" id="statsContainer">
+            <div class="stat-item">
+                <div class="stat-value" id="freeRemaining">-</div>
+                <div class="stat-label">Free clips left</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" id="daysUntilReset">-</div>
+                <div class="stat-label">Days to reset</div>
+            </div>
+            <button class="upgrade-button" onclick="handleUpgrade()">
+                ⭐ Upgrade to Pro
+            </button>
+        </div>
+
+        <!-- Tier Toggle -->
+        <div class="tier-toggle">
+            <button class="tier-button active" data-tier="free" onclick="selectTier('free')">
+                🎬 Free (10s)
+            </button>
+            <button class="tier-button" data-tier="paid" onclick="selectTier('paid')">
+                ⭐ Pro (30s HD)
+            </button>
+        </div>
+
+        <!-- Prompt Input -->
+        <div class="input-container">
+            <textarea 
+                id="promptInput" 
+                class="prompt-input" 
+                placeholder="Describe your video... (e.g., 'A cat surfing on a rainbow wave in space')"
+                maxlength="500"
+                rows="4"
+            ></textarea>
+            <div class="char-count">
+                <span id="charCount">0</span>/500
+            </div>
+        </div>
+
+        <!-- Generate Button -->
+        <button 
+            id="generateButton" 
+            class="generate-button" 
+            onclick="generateVideo()"
+        >
+            <span id="buttonText">🚀 Generate 10s FREE Video</span>
+        </button>
+
+        <!-- Time Warning -->
+        <div class="time-warning">
+            ⏱️ Generation takes 3-5 minutes. Please wait patiently.
+        </div>
+
+        <!-- Loading Indicator with Progress -->
+        <div id="loadingIndicator" class="loading-indicator hidden">
+            <div class="spinner"></div>
+            <p id="loadingText">Starting video generation...</p>
+            <div id="progressBar" class="progress-bar hidden">
+                <div id="progressFill" class="progress-fill"></div>
+            </div>
+            <p class="loading-tip">⏱️ Video generation typically takes 3-5 minutes</p>
+        </div>
+
+        <!-- Error Message -->
+        <div id="errorContainer" class="error-container hidden">
+            <span class="error-icon">⚠️</span>
+            <p id="errorMessage"></p>
+            <button class="error-close" onclick="document.getElementById('errorContainer').classList.add('hidden')">×</button>
+        </div>
+
+        <!-- Video Player -->
+        <div id="videoContainer" class="video-container hidden">
+            <h3 class="video-title">✨ Your Generated Video</h3>
+            <video 
+                id="videoPlayer" 
+                class="video-player" 
+                controls 
+                loop
+                playsinline
+                autoplay
+            ></video>
+            <div id="adBanner" class="ad-banner hidden">
+                <p>⭐ Upgrade to Pro for ad-free 1080p videos!</p>
+            </div>
+            <div class="video-actions">
+                <button class="action-button download" onclick="downloadVideo()">
+                    📥 Download
+                </button>
+                <button class="action-button share" onclick="shareVideo()">
+                    📤 Share
+                </button>
+                <button class="action-button new" onclick="resetUI()">
+                    🔄 New Video
+                </button>
+            </div>
+        </div>
+
+        <!-- Recent Generations (Library Preview) -->
+        <div id="historyContainer" class="history-container hidden">
+            <div class="history-header">
+                <h3 class="history-title">📚 Recent Videos</h3>
+                <button class="view-all-btn" onclick="showLibrary()">View All →</button>
+            </div>
+            <div id="historyList" class="history-list"></div>
+        </div>
+
+        <!-- Features Section -->
+        <div class="features-section">
+            <h3>Why Choose NeoClip?</h3>
+            <div class="features-grid">
+                <div class="feature-item">
+                    <span class="feature-icon">🎁</span>
+                    <span class="feature-text">10 FREE clips/month</span>
+                </div>
+                <div class="feature-item">
+                    <span class="feature-icon">💳</span>
+                    <span class="feature-text">No credit card</span>
+                </div>
+                <div class="feature-item">
+                    <span class="feature-icon">🚫</span>
+                    <span class="feature-text">No watermark</span>
+                </div>
+                <div class="feature-item">
+                    <span class="feature-icon">♾️</span>
+                    <span class="feature-text">Unlimited exports</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>Made with ❤️ by NeoClip AI</p>
+            <p><a href="https://github.com/kubanmedia/neoclip302" target="_blank">GitHub</a> | v3.4.0</p>
+        </footer>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast"></div>
+
+</body>
+</html>
