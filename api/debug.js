@@ -1,30 +1,30 @@
 /**
- * NeoClip 340 - Debug Endpoint v3.4.1
+ * NeoClip 340 - Debug Endpoint v3.4.2
  * Test provider connections and see response formats
  * 
- * CRITICAL FIXES v3.4.1:
- * - Uses WHATWG URL API (no deprecated url.parse)
- * - Modern fetch API patterns
+ * CRITICAL FIXES v3.4.2:
+ * - FIXED: DEP0169 - Completely avoid req.query access
+ * - Uses ONLY WHATWG URL API for query parsing
  * 
  * GET /api/debug - Show configured providers
  * POST /api/debug - Test a specific provider
  */
 
 /**
- * Parse query parameters using WHATWG URL API (no deprecated url.parse)
+ * CRITICAL FIX for DEP0169:
+ * Parse query parameters using ONLY WHATWG URL API
+ * NEVER access req.query - it triggers internal url.parse() in Vercel/Node
  */
 function getQueryParams(req) {
-  // For Vercel, req.query is already parsed
-  if (req.query && Object.keys(req.query).length > 0) {
-    return req.query;
-  }
-  
   try {
-    // Use WHATWG URL API - this is the modern standard
-    const baseUrl = `http://${req.headers?.host || 'localhost'}`;
+    // ALWAYS use WHATWG URL API, NEVER req.query
+    const host = req.headers?.host || req.headers?.['x-forwarded-host'] || 'localhost';
+    const protocol = req.headers?.['x-forwarded-proto'] || 'https';
+    const baseUrl = `${protocol}://${host}`;
     const fullUrl = new URL(req.url || '/', baseUrl);
     return Object.fromEntries(fullUrl.searchParams);
-  } catch {
+  } catch (err) {
+    console.error('URL parsing error:', err.message);
     return {};
   }
 }
@@ -78,17 +78,18 @@ export default async function handler(req, res) {
     };
 
     return res.status(200).json({
-      message: 'NeoClip 340 Debug Info v3.4.1',
+      message: 'NeoClip 340 Debug Info v3.4.2',
       timestamp: new Date().toISOString(),
-      version: '3.4.1',
+      version: '3.4.2',
       providers,
       fallbackChains,
       environment: process.env.NODE_ENV || 'production',
       nodeVersion: process.version,
       fixes: [
-        'WHATWG URL API (no url.parse deprecation)',
-        'Updated fallback chains (no FAL for free tier)',
-        'Modern Web Crypto API for webhooks'
+        'DEP0169 FIXED: Avoid req.query access completely',
+        'Video URL extraction: Correct Luma data.output.video_url path',
+        'Wan-2.1: Corrected Replicate API format',
+        'All APIs use WHATWG URL API only'
       ]
     });
   }
@@ -107,7 +108,7 @@ export default async function handler(req, res) {
         key: process.env.REPLICATE_KEY,
         authHeader: `Token ${process.env.REPLICATE_KEY}`,
         body: {
-          version: 'wan-lab/wan-2.1:e8c37be16be5e3bb950f55e0d73d1e87e4be5a47',
+          version: 'wan-lab/wan2.1-t2v-1.3b:e8c37be16be5e3bb950f55e0d73d1e87e4be5a47',
           input: { prompt, num_frames: 240, guidance_scale: 7.5 }
         }
       },

@@ -1,10 +1,10 @@
 /**
- * NeoClip 340 - Generation Status API v3.4.1
+ * NeoClip 340 - Generation Status API v3.4.2
  * Check the status of a video generation task
  * 
- * CRITICAL FIXES v3.4.1:
- * - Uses WHATWG URL API (no deprecated url.parse)
- * - Proper query parameter parsing
+ * CRITICAL FIXES v3.4.2:
+ * - FIXED: DEP0169 - Completely avoid req.query access
+ * - Uses ONLY WHATWG URL API for query parsing
  * 
  * SECURITY: All sensitive keys are stored in Vercel Environment Variables
  */
@@ -20,20 +20,21 @@ const getSupabaseClient = () => {
 };
 
 /**
- * Parse query parameters using WHATWG URL API (no deprecated url.parse)
+ * CRITICAL FIX for DEP0169:
+ * Parse query parameters using ONLY WHATWG URL API
+ * NEVER access req.query - it triggers internal url.parse() in Vercel/Node
  */
 function getQueryParams(req) {
-  // For Vercel, req.query is already parsed
-  if (req.query && Object.keys(req.query).length > 0) {
-    return req.query;
-  }
-  
   try {
-    // Use WHATWG URL API - this is the modern standard
-    const baseUrl = `http://${req.headers?.host || 'localhost'}`;
+    // ALWAYS use WHATWG URL API, NEVER req.query
+    // req.query access triggers url.parse() internally in Vercel's request handling
+    const host = req.headers?.host || req.headers?.['x-forwarded-host'] || 'localhost';
+    const protocol = req.headers?.['x-forwarded-proto'] || 'https';
+    const baseUrl = `${protocol}://${host}`;
     const fullUrl = new URL(req.url || '/', baseUrl);
     return Object.fromEntries(fullUrl.searchParams);
-  } catch {
+  } catch (err) {
+    console.error('URL parsing error:', err.message);
     return {};
   }
 }
@@ -53,7 +54,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Use WHATWG URL API compatible query parsing
+    // CRITICAL: Use WHATWG URL API only, avoid req.query (triggers DEP0169)
     const query = getQueryParams(req);
     const { taskId, userId } = query;
 
@@ -126,8 +127,8 @@ export default async function handler(req, res) {
         user: {
           id: user.id,
           tier: user.tier,
-          freeUsed: user.free_used,
-          freeRemaining: 10 - user.free_used,
+          freeUsed: user.free_used || 0,
+          freeRemaining: Math.max(0, 10 - (user.free_used || 0)),
           resetsAt: user.resets_at,
           daysUntilReset: Math.max(0, daysUntilReset)
         },

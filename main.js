@@ -1,5 +1,5 @@
 /**
- * NeoClip Frontend v3.4.1
+ * NeoClip Frontend v3.4.2
  * Complete rewrite with proper polling and Library screen
  * 
  * FIXES:

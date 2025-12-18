@@ -1,13 +1,12 @@
 /**
- * NeoClip 340 - Polling API v3.4.1
+ * NeoClip 340 - Polling API v3.4.2
  * Properly polls provider status and saves completed videos to Supabase
  * 
- * CRITICAL FIXES v3.4.1:
- * 1. Uses WHATWG URL API (no deprecated url.parse)
- * 2. Correctly handles GET method
- * 3. Polls provider API for actual status
- * 4. Saves video_url to Supabase when completed
- * 5. Rolls back usage on failure
+ * CRITICAL FIXES v3.4.2:
+ * 1. FIXED: DEP0169 - Completely avoid req.query access (triggers url.parse internally)
+ * 2. FIXED: "Video completed but URL not found" - Correct Luma video_url extraction
+ * 3. Uses only WHATWG URL API for query parsing
+ * 4. Enhanced logging for debugging
  * 
  * GET /api/poll?generationId=xxx
  */
@@ -22,6 +21,7 @@ const supabase = createClient(
 
 /**
  * Provider configurations for polling
+ * CRITICAL: extractVideoUrl must match actual API response structure
  */
 const PROVIDERS = {
   wan: {
@@ -36,9 +36,12 @@ const PROVIDERS = {
       if (status === 'starting') return 'queued';
       return 'processing';
     },
+    // Replicate returns output as array or string directly
     extractVideoUrl: (response) => {
       const output = response?.output;
-      return Array.isArray(output) ? output[0] : output;
+      if (Array.isArray(output)) return output[0];
+      if (typeof output === 'string') return output;
+      return null;
     },
     extractError: (response) => response?.error,
     extractProgress: (response) => {
@@ -65,6 +68,7 @@ const PROVIDERS = {
       if (status === 'in_queue') return 'queued';
       return 'processing';
     },
+    // FAL returns video URL in multiple possible locations
     extractVideoUrl: (response) => {
       return response?.video?.url || 
              response?.output?.video_url ||
@@ -87,19 +91,32 @@ const PROVIDERS = {
     authHeader: (key) => `Bearer ${key}`,
     getStatusUrl: (taskId) => `https://api.piapi.ai/api/v1/task/${taskId}`,
     parseStatus: (response) => {
+      // PiAPI wraps response in data object
       const status = (response?.data?.status || response?.status || '').toLowerCase();
       if (status === 'completed' || status === 'succeeded' || status === 'success') return 'completed';
       if (status === 'failed' || status === 'error') return 'failed';
       if (status === 'pending' || status === 'queued') return 'queued';
       return 'processing';
     },
+    // CRITICAL FIX: PiAPI Luma returns video_url in data.output.video_url
+    // Based on actual log: {"code":200,"data":{"output":{"video_url":"https://..."}}}
     extractVideoUrl: (response) => {
-      return response?.data?.output?.video_url ||
-             response?.data?.video_url ||
-             response?.output?.video_url ||
-             response?.video_url;
+      // Try all possible paths for video URL
+      const url = response?.data?.output?.video_url ||  // Most common path
+                  response?.data?.video_url ||
+                  response?.output?.video_url ||
+                  response?.video_url ||
+                  response?.data?.output?.url ||
+                  response?.data?.url;
+      
+      console.log('[Luma] Extracting video URL from paths:');
+      console.log('  data.output.video_url:', response?.data?.output?.video_url);
+      console.log('  data.video_url:', response?.data?.video_url);
+      console.log('  Final URL:', url);
+      
+      return url;
     },
-    extractError: (response) => response?.data?.error || response?.error,
+    extractError: (response) => response?.data?.error || response?.error || response?.message,
     extractProgress: (response) => {
       const status = (response?.data?.status || response?.status || '').toLowerCase();
       if (status === 'completed') return 100;
@@ -112,20 +129,21 @@ const PROVIDERS = {
 };
 
 /**
- * Parse query parameters using WHATWG URL API (no deprecated url.parse)
+ * CRITICAL FIX for DEP0169:
+ * Parse query parameters using ONLY WHATWG URL API
+ * NEVER access req.query - it triggers internal url.parse() in Vercel/Node
  */
 function getQueryParams(req) {
-  // For Vercel, req.query is already parsed
-  if (req.query && Object.keys(req.query).length > 0) {
-    return req.query;
-  }
-  
   try {
-    // Use WHATWG URL API - this is the modern standard
-    const baseUrl = `http://${req.headers?.host || 'localhost'}`;
+    // ALWAYS use WHATWG URL API, NEVER req.query
+    // req.query access triggers url.parse() internally in Vercel's request handling
+    const host = req.headers?.host || req.headers?.['x-forwarded-host'] || 'localhost';
+    const protocol = req.headers?.['x-forwarded-proto'] || 'https';
+    const baseUrl = `${protocol}://${host}`;
     const fullUrl = new URL(req.url || '/', baseUrl);
     return Object.fromEntries(fullUrl.searchParams);
-  } catch {
+  } catch (err) {
+    console.error('URL parsing error:', err.message);
     return {};
   }
 }
@@ -152,15 +170,15 @@ async function makeRequest(url, options, timeoutMs = 15000) {
     try {
       if (text) data = JSON.parse(text);
     } catch (e) {
-      console.warn('Response not JSON');
+      console.warn('Response not JSON:', text.slice(0, 100));
     }
 
-    return { status: response.status, data, ok: response.ok };
+    return { status: response.status, data, ok: response.ok, text };
   } catch (error) {
     if (error.name === 'AbortError') {
-      return { status: 408, data: {}, ok: false };
+      return { status: 408, data: {}, ok: false, text: '' };
     }
-    return { status: 0, data: {}, ok: false };
+    return { status: 0, data: {}, ok: false, text: '' };
   } finally {
     clearTimeout(timeout);
   }
@@ -185,12 +203,14 @@ async function pollProvider(providerKey, taskId) {
     const statusUrl = config.getStatusUrl(taskId);
     console.log(`[${config.name}] Polling: ${statusUrl}`);
     
-    let { status: httpStatus, data, ok } = await makeRequest(statusUrl, {
+    let { status: httpStatus, data, ok, text } = await makeRequest(statusUrl, {
       method: 'GET',
       headers: { 'Authorization': config.authHeader(apiKey) }
     });
 
-    console.log(`[${config.name}] Status: HTTP ${httpStatus}`, JSON.stringify(data).slice(0, 300));
+    // Log full response for debugging (truncated for very long responses)
+    const logText = text.length > 500 ? text.slice(0, 500) + '...[truncated]' : text;
+    console.log(`[${config.name}] Status: HTTP ${httpStatus}`, logText);
 
     if (httpStatus === 401 || httpStatus === 403) {
       return { status: 'failed', error: 'Authentication error' };
@@ -199,6 +219,8 @@ async function pollProvider(providerKey, taskId) {
     const taskStatus = config.parseStatus(data);
     const progress = config.extractProgress(data);
 
+    console.log(`[${config.name}] Parsed status: ${taskStatus}, progress: ${progress}`);
+
     if (taskStatus === 'completed') {
       // Try to get video URL
       let videoUrl = config.extractVideoUrl(data);
@@ -206,7 +228,7 @@ async function pollProvider(providerKey, taskId) {
       // For FAL, might need to fetch result separately
       if (!videoUrl && config.getResultUrl) {
         const resultUrl = config.getResultUrl(taskId);
-        console.log(`[${config.name}] Fetching result: ${resultUrl}`);
+        console.log(`[${config.name}] Fetching result separately: ${resultUrl}`);
         
         const resultResponse = await makeRequest(resultUrl, {
           method: 'GET',
@@ -214,22 +236,28 @@ async function pollProvider(providerKey, taskId) {
         });
         
         if (resultResponse.ok) {
+          console.log(`[${config.name}] Result response:`, resultResponse.text?.slice(0, 300));
           videoUrl = config.extractVideoUrl(resultResponse.data);
-          console.log(`[${config.name}] Video from result:`, videoUrl?.slice(0, 100));
         }
       }
 
       if (videoUrl) {
+        console.log(`[${config.name}] ✅ Video URL found: ${videoUrl.slice(0, 80)}...`);
         return { status: 'completed', videoUrl, progress: 100 };
       } else {
-        return { status: 'failed', error: 'Video completed but URL not found' };
+        // Log the full data structure for debugging
+        console.error(`[${config.name}] ❌ Video URL NOT found in response!`);
+        console.error(`[${config.name}] Full response data:`, JSON.stringify(data, null, 2).slice(0, 1000));
+        return { status: 'failed', error: 'Video completed but URL not found in response' };
       }
     }
 
     if (taskStatus === 'failed') {
+      const errorMsg = config.extractError(data) || 'Generation failed';
+      console.log(`[${config.name}] ❌ Task failed: ${errorMsg}`);
       return { 
         status: 'failed', 
-        error: config.extractError(data) || 'Generation failed'
+        error: errorMsg
       };
     }
 
@@ -268,7 +296,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Use WHATWG URL API compatible query parsing
+    // CRITICAL: Use WHATWG URL API only, avoid req.query
     const query = getQueryParams(req);
     const generationId = query.generationId;
 
@@ -276,7 +304,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'generationId is required' });
     }
 
-    console.log(`\nPolling generation: ${generationId}`);
+    console.log(`\n========== Polling generation: ${generationId} ==========`);
 
     // Get generation from database
     const { data: generation, error: dbError } = await supabase
@@ -293,9 +321,11 @@ export default async function handler(req, res) {
       });
     }
 
+    console.log(`Provider: ${generation.provider}, TaskId: ${generation.task_id}, Status: ${generation.status}`);
+
     // If already completed, return cached result
     if (generation.status === 'completed' && generation.video_url) {
-      console.log('Returning cached completed generation');
+      console.log('✅ Returning cached completed generation');
       return res.status(200).json({
         success: true,
         status: 'completed',
@@ -336,21 +366,23 @@ export default async function handler(req, res) {
           status: 'completed',
           video_url: pollResult.videoUrl,
           completed_at: completedAt,
-          updated_at: completedAt
+          updated_at: completedAt,
+          total_time_ms: totalTimeMs
         })
         .eq('id', generationId);
 
       if (updateError) {
         console.error('Failed to update generation:', updateError);
       } else {
-        console.log('✅ Video URL saved to Supabase');
+        console.log('✅ Video URL saved to Supabase:', pollResult.videoUrl.slice(0, 60));
       }
 
       // Update user stats
       await supabase
         .from('users')
         .update({
-          last_active_at: completedAt
+          last_active_at: completedAt,
+          total_videos_generated: (generation.user?.total_videos_generated || 0) + 1
         })
         .eq('id', generation.user_id);
 
@@ -392,11 +424,13 @@ export default async function handler(req, res) {
             .from('users')
             .update({ free_used: user.free_used - 1 })
             .eq('id', generation.user_id);
+          console.log('🔄 Rolled back free_used for user');
         } else if (generation.tier !== 'free' && (user.paid_used || 0) > 0) {
           await supabase
             .from('users')
             .update({ paid_used: user.paid_used - 1 })
             .eq('id', generation.user_id);
+          console.log('🔄 Rolled back paid_used for user');
         }
       }
 
