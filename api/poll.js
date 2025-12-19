@@ -1,11 +1,12 @@
 /**
- * NeoClip 340 - Polling API v3.4.2
+ * NeoClip 340 - Polling API v3.4.3
  * Properly polls provider status and saves completed videos to Supabase
  * 
- * CRITICAL FIXES v3.4.2:
- * 1. FIXED: DEP0169 - Completely avoid req.query access (triggers url.parse internally)
- * 2. FIXED: "Video completed but URL not found" - Correct Luma video_url extraction
- * 3. Uses only WHATWG URL API for query parsing
+ * CRITICAL FIXES v3.4.3:
+ * 1. FIXED: DEP0169 - Completely avoid req.query access
+ * 2. FIXED: "Video completed but URL not found" - Correct Luma nested video URL extraction
+ *    - Luma returns: data.output.video.url and data.output.video_raw.url (NOT data.output.video_url)
+ * 3. UPDATED: Wan-2.1 → Wan-2.2 model support
  * 4. Enhanced logging for debugging
  * 
  * GET /api/poll?generationId=xxx
@@ -25,9 +26,9 @@ const supabase = createClient(
  */
 const PROVIDERS = {
   wan: {
-    name: 'Wan-2.1',
+    name: 'Wan-2.2',
     getKey: () => process.env.REPLICATE_KEY,
-    authHeader: (key) => `Token ${key}`,
+    authHeader: (key) => `Bearer ${key}`,
     getStatusUrl: (taskId) => `https://api.replicate.com/v1/predictions/${taskId}`,
     parseStatus: (response) => {
       const status = response?.status?.toLowerCase() || '';
@@ -98,23 +99,48 @@ const PROVIDERS = {
       if (status === 'pending' || status === 'queued') return 'queued';
       return 'processing';
     },
-    // CRITICAL FIX: PiAPI Luma returns video_url in data.output.video_url
-    // Based on actual log: {"code":200,"data":{"output":{"video_url":"https://..."}}}
+    /**
+     * CRITICAL FIX v3.4.3: Correct Luma/PiAPI video URL extraction
+     * 
+     * Actual PiAPI Luma response structure (from audit logs):
+     * {
+     *   "code": 200,
+     *   "data": {
+     *     "status": "completed",
+     *     "output": {
+     *       "video": {
+     *         "url": "https://storage.cdn-luma.com/.../watermarked.mp4"
+     *       },
+     *       "video_raw": {
+     *         "url": "https://storage.cdn-luma.com/.../clean.mp4"
+     *       }
+     *     }
+     *   }
+     * }
+     * 
+     * Previous code looked for: data.output.video_url (WRONG - flat path)
+     * Correct path: data.output.video_raw.url or data.output.video.url (NESTED)
+     */
     extractVideoUrl: (response) => {
-      // Try all possible paths for video URL
-      const url = response?.data?.output?.video_url ||  // Most common path
-                  response?.data?.video_url ||
-                  response?.output?.video_url ||
-                  response?.video_url ||
-                  response?.data?.output?.url ||
-                  response?.data?.url;
+      // Log all paths for debugging
+      console.log('[Luma] Extracting video URL...');
+      console.log('  Checking data.output.video_raw.url:', response?.data?.output?.video_raw?.url);
+      console.log('  Checking data.output.video.url:', response?.data?.output?.video?.url);
+      console.log('  Checking data.output.video_url:', response?.data?.output?.video_url);
+      console.log('  Checking data.video_url:', response?.data?.video_url);
       
-      console.log('[Luma] Extracting video URL from paths:');
-      console.log('  data.output.video_url:', response?.data?.output?.video_url);
-      console.log('  data.video_url:', response?.data?.video_url);
-      console.log('  Final URL:', url);
+      // Try all possible paths in order of preference
+      const videoUrl = response?.data?.output?.video_raw?.url ||  // Prefer unwatermarked (clean)
+                       response?.data?.output?.video?.url ||       // Watermarked fallback
+                       response?.data?.output?.video_url ||        // Old flat structure
+                       response?.data?.video_url ||                // Direct on data
+                       response?.output?.video_raw?.url ||         // Without data wrapper
+                       response?.output?.video?.url ||
+                       response?.output?.video_url ||
+                       response?.video_url;
       
-      return url;
+      console.log('  Final URL:', videoUrl ? videoUrl.slice(0, 80) + '...' : 'NOT FOUND');
+      return videoUrl;
     },
     extractError: (response) => response?.data?.error || response?.error || response?.message,
     extractProgress: (response) => {
@@ -135,11 +161,13 @@ const PROVIDERS = {
  */
 function getQueryParams(req) {
   try {
-    // ALWAYS use WHATWG URL API, NEVER req.query
-    // req.query access triggers url.parse() internally in Vercel's request handling
+    // Build full URL from request
+    // CRITICAL: Do NOT access req.query - triggers url.parse() internally
     const host = req.headers?.host || req.headers?.['x-forwarded-host'] || 'localhost';
     const protocol = req.headers?.['x-forwarded-proto'] || 'https';
     const baseUrl = `${protocol}://${host}`;
+    
+    // Use WHATWG URL constructor (modern, no deprecation warning)
     const fullUrl = new URL(req.url || '/', baseUrl);
     return Object.fromEntries(fullUrl.searchParams);
   } catch (err) {
@@ -208,9 +236,11 @@ async function pollProvider(providerKey, taskId) {
       headers: { 'Authorization': config.authHeader(apiKey) }
     });
 
-    // Log full response for debugging (truncated for very long responses)
-    const logText = text.length > 500 ? text.slice(0, 500) + '...[truncated]' : text;
-    console.log(`[${config.name}] Status: HTTP ${httpStatus}`, logText);
+    // Log full response for debugging
+    console.log(`[${config.name}] Status: HTTP ${httpStatus}`);
+    // Log truncated response to see structure
+    const logData = JSON.stringify(data, null, 2);
+    console.log(`[${config.name}] Response structure:`, logData.slice(0, 800) + (logData.length > 800 ? '...[truncated]' : ''));
 
     if (httpStatus === 401 || httpStatus === 403) {
       return { status: 'failed', error: 'Authentication error' };
@@ -236,7 +266,7 @@ async function pollProvider(providerKey, taskId) {
         });
         
         if (resultResponse.ok) {
-          console.log(`[${config.name}] Result response:`, resultResponse.text?.slice(0, 300));
+          console.log(`[${config.name}] Result response:`, JSON.stringify(resultResponse.data).slice(0, 500));
           videoUrl = config.extractVideoUrl(resultResponse.data);
         }
       }
@@ -245,10 +275,14 @@ async function pollProvider(providerKey, taskId) {
         console.log(`[${config.name}] ✅ Video URL found: ${videoUrl.slice(0, 80)}...`);
         return { status: 'completed', videoUrl, progress: 100 };
       } else {
-        // Log the full data structure for debugging
-        console.error(`[${config.name}] ❌ Video URL NOT found in response!`);
-        console.error(`[${config.name}] Full response data:`, JSON.stringify(data, null, 2).slice(0, 1000));
-        return { status: 'failed', error: 'Video completed but URL not found in response' };
+        // Critical error: completed but no URL
+        console.error(`[${config.name}] ❌ CRITICAL: Video completed but URL NOT found!`);
+        console.error(`[${config.name}] Full response for debugging:`);
+        console.error(JSON.stringify(data, null, 2));
+        return { 
+          status: 'failed', 
+          error: 'Video completed but URL not found in response. Please check provider logs.' 
+        };
       }
     }
 
@@ -297,6 +331,7 @@ export default async function handler(req, res) {
 
   try {
     // CRITICAL: Use WHATWG URL API only, avoid req.query
+    // req.query triggers DEP0169 warning because Vercel's internal handler uses url.parse()
     const query = getQueryParams(req);
     const generationId = query.generationId;
 
@@ -336,7 +371,7 @@ export default async function handler(req, res) {
         tier: generation.tier,
         duration: generation.duration || generation.length,
         generationTime: generation.total_time_ms ? `${(generation.total_time_ms / 1000).toFixed(1)}s` : null,
-        needsAd: generation.tier === 'free'
+        needsAd: generation.tier === 'free' && !generation.test_mode
       });
     }
 
@@ -395,7 +430,7 @@ export default async function handler(req, res) {
         tier: generation.tier,
         duration: generation.duration || generation.length,
         generationTime: `${(totalTimeMs / 1000).toFixed(1)}s`,
-        needsAd: generation.tier === 'free'
+        needsAd: generation.tier === 'free' && !generation.test_mode
       });
     }
 
@@ -418,7 +453,7 @@ export default async function handler(req, res) {
         .eq('id', generation.user_id)
         .single();
 
-      if (user) {
+      if (user && !generation.test_mode) {
         if (generation.tier === 'free' && (user.free_used || 0) > 0) {
           await supabase
             .from('users')

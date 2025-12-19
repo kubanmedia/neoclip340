@@ -2,11 +2,11 @@
 
 > Generate viral short videos with AI. 10 free clips per month, no credit card needed.
 
-**Version:** 3.4.2  
+**Version:** 3.4.3  
 **Live Demo:** https://neoclip340.vercel.app  
 **GitHub:** https://github.com/kubanmedia/neoclip340
 
-## What's Fixed in v3.4.2 (CRITICAL)
+## What's Fixed in v3.4.3 (CRITICAL)
 
 ### 1. DEP0169 Deprecation Warning - PERMANENTLY FIXED
 **Problem:** Vercel logs showed:
@@ -34,28 +34,71 @@ return Object.fromEntries(fullUrl.searchParams);
 ### 2. "Video completed but URL not found" - FIXED
 **Problem:** Luma video generation succeeds but video URL not extracted.
 
-**Root Cause:** PiAPI Luma returns video URL in `data.output.video_url`, not `data.video_url`.
+**Root Cause:** PiAPI Luma returns video URL in NESTED structure:
+```json
+{
+  "data": {
+    "output": {
+      "video": { "url": "https://...watermarked.mp4" },
+      "video_raw": { "url": "https://...clean.mp4" }
+    }
+  }
+}
+```
+Previous code looked for `data.output.video_url` (flat path) instead of `data.output.video.url` (nested path).
 
-**Solution:** Enhanced video URL extraction with multiple fallback paths:
+**Solution:** Enhanced video URL extraction with ALL possible paths:
 ```javascript
 extractVideoUrl: (response) => {
-  return response?.data?.output?.video_url ||  // ✅ Correct Luma path
+  return response?.data?.output?.video_raw?.url ||   // ✅ Prefer unwatermarked
+         response?.data?.output?.video?.url ||        // ✅ Watermarked fallback
+         response?.data?.output?.video_url ||         // Old flat structure
          response?.data?.video_url ||
-         response?.output?.video_url ||
+         response?.output?.video?.url ||
+         response?.output?.video_raw?.url ||
          response?.video_url;
 }
 ```
 
-### 3. Wan-2.1 HTTP 422 Error - FIXED  
-**Problem:** Replicate returns 422 validation error.
+### 3. Wan-2.1 Model No Longer Exists - UPDATED TO Wan-2.2
+**Problem:** Replicate returns validation error:
+```
+[Wan-2.1] Failed: validation error: The specified version does not exist
+```
 
-**Solution:** Corrected API request format for Replicate.
+**Root Cause:** The Wan-2.1 model was deprecated/removed from Replicate.
+
+**Solution:** Updated to `wan-video/wan-2.2-t2v-fast`:
+```javascript
+// ❌ OLD - model no longer exists
+createUrl: 'https://api.replicate.com/v1/predictions',
+version: 'wan-lab/wan2.1-t2v-1.3b:e8c37be...'
+
+// ✅ NEW - use model endpoint directly
+createUrl: 'https://api.replicate.com/v1/models/wan-video/wan-2.2-t2v-fast/predictions',
+// No version hash needed with model endpoint
+```
+
+### 4. AdMob Prevention for Tests - ADDED
+**New Feature:** `testMode` parameter to skip ads and quota limits during testing:
+```json
+// Request with testMode
+{
+  "prompt": "Test video",
+  "userId": "test-user",
+  "tier": "free",
+  "testMode": true  // ← New parameter
+}
+```
+- Skips free quota check
+- Sets `needsAd: false` in response
+- Records `test_mode: true` in database
 
 ## Fallback Chain (Cost Optimized)
 
 | Tier | Primary | Fallback | Max Cost |
 |------|---------|----------|----------|
-| **FREE** | Wan-2.1 ($0.0008) | Luma ($0.20) | $0.20 |
+| **FREE** | Wan-2.2 (~$0.001) | Luma ($0.20) | $0.20 |
 | **PAID** | Luma ($0.20) | FAL MiniMax ($0.50) | $0.50 |
 
 **Cost savings for FREE tier:**
@@ -96,7 +139,8 @@ Creates a new video generation task.
   "prompt": "A cat playing piano",
   "userId": "uuid",
   "tier": "free",
-  "length": 10
+  "length": 10,
+  "testMode": false  // Optional: skip ads & quota for testing
 }
 
 // Response
@@ -104,8 +148,10 @@ Creates a new video generation task.
   "success": true,
   "generationId": "uuid",
   "provider": "wan",
-  "providerName": "Wan-2.1",
-  "pollUrl": "/api/poll?generationId=uuid"
+  "providerName": "Wan-2.2",
+  "pollUrl": "/api/poll?generationId=uuid",
+  "needsAd": true,
+  "testMode": false
 }
 ```
 
@@ -126,7 +172,7 @@ SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_KEY=your-service-role-key
 
 # Providers (At least one required)
-REPLICATE_KEY=your-replicate-key     # For Wan-2.1 ($0.0008)
+REPLICATE_KEY=your-replicate-key     # For Wan-2.2 (~$0.001)
 PIAPI_KEY=your-piapi-key             # For Luma ($0.20)
 FAL_KEY=your-fal-key                 # For MiniMax ($0.50)
 ```
@@ -146,16 +192,40 @@ curl https://neoclip340.vercel.app/api/debug
 ```
 
 Expected response should show:
-- `"version": "3.4.2"`
-- `"fixes": ["DEP0169 FIXED: Avoid req.query access completely", ...]`
+- `"version": "3.4.3"`
+- `"fixes": ["DEP0169 FIXED: ...", "Video URL extraction: Handle nested ...", "Wan model UPDATED: ..."]`
+
+## Test the Fixes
+
+### Test Video Generation
+```bash
+curl -X POST https://neoclip340.vercel.app/api/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Cherry blossoms falling",
+    "userId": "test-user-123",
+    "tier": "free",
+    "testMode": true
+  }'
+```
+
+### Test Polling
+```bash
+curl "https://neoclip340.vercel.app/api/poll?generationId=YOUR_GENERATION_ID"
+```
 
 ## Changelog
 
-### v3.4.2 (Current) - CRITICAL FIX
-- **FIXED:** DEP0169 - Completely avoid `req.query` access in ALL API files
-- **FIXED:** "Video completed but URL not found" - Correct Luma extraction path
+### v3.4.3 (Current) - CRITICAL FIXES
+- **FIXED:** "Video completed but URL not found" - Handle nested Luma response paths (`data.output.video.url` and `data.output.video_raw.url`)
+- **FIXED:** Wan-2.1 → Wan-2.2-t2v-fast (old model no longer exists on Replicate)
+- **FIXED:** DEP0169 - Complete avoidance of `req.query` access
+- **ADDED:** `testMode` parameter for AdMob prevention during testing
+- **IMPROVED:** Enhanced logging for all video URL extraction paths
+
+### v3.4.2
+- **FIXED:** DEP0169 - Avoid `req.query` access in ALL API files
 - **FIXED:** Wan-2.1 HTTP 422 - Correct Replicate API format
-- **IMPROVED:** Enhanced logging for debugging
 
 ### v3.4.1
 - Initial WHATWG URL API migration (incomplete)

@@ -1,10 +1,11 @@
 /**
- * NeoClip 340 - Generation Status API v3.4.2
+ * NeoClip 340 - Generation Status API v3.4.3
  * Check the status of a video generation task
  * 
- * CRITICAL FIXES v3.4.2:
+ * CRITICAL FIXES v3.4.3:
  * - FIXED: DEP0169 - Completely avoid req.query access
  * - Uses ONLY WHATWG URL API for query parsing
+ * - Added test_mode field support
  * 
  * SECURITY: All sensitive keys are stored in Vercel Environment Variables
  */
@@ -87,9 +88,11 @@ export default async function handler(req, res) {
           videoUrl: generation.video_url,
           tier: generation.tier,
           prompt: generation.prompt,
+          model: generation.model,
           createdAt: generation.created_at,
           completedAt: generation.completed_at,
-          error: generation.error
+          error: generation.error,
+          testMode: generation.test_mode || false
         }
       });
     }
@@ -108,7 +111,7 @@ export default async function handler(req, res) {
 
       const { data: generations, error: genError } = await supabase
         .from('generations')
-        .select('id, task_id, status, video_url, tier, prompt, created_at')
+        .select('id, task_id, status, video_url, tier, prompt, model, created_at, test_mode')
         .eq('user_id', userId)
         .order('created_at', { ascending: false })
         .limit(20);
@@ -139,7 +142,9 @@ export default async function handler(req, res) {
           videoUrl: g.video_url,
           tier: g.tier,
           prompt: g.prompt,
-          createdAt: g.created_at
+          model: g.model,
+          createdAt: g.created_at,
+          testMode: g.test_mode || false
         }))
       });
     }

@@ -1,15 +1,16 @@
 /**
- * NeoClip 340 - Video Generation API v3.4.2
+ * NeoClip 340 - Video Generation API v3.4.3
  * "Never-Fail" Pipeline with Proper API Formats
  * 
- * CRITICAL FIXES v3.4.2:
- * 1. FIXED: DEP0169 - Avoid req.query access completely
- * 2. FIXED: Wan-2.1 HTTP 422 - Correct Replicate API format
- * 3. FIXED: Luma video_url extraction path
- * 4. Uses only WHATWG URL API for query parsing
+ * CRITICAL FIXES v3.4.3:
+ * 1. FIXED: Wan-2.1 → Wan-2.2 (old version no longer exists)
+ * 2. FIXED: DEP0169 - Complete avoidance of url.parse
+ * 3. FIXED: Video URL extraction paths for all providers
+ * 4. ADDED: Test mode for AdMob prevention
+ * 5. Uses only WHATWG URL API for query parsing
  * 
  * FALLBACK CHAIN (cost optimized):
- * FREE: Wan-2.1 (Replicate) $0.0008 → Luma (PiAPI) $0.20 (768p)
+ * FREE: Wan-2.2 (Replicate) ~$0.001 → Luma (PiAPI) $0.20 (768p)
  * PAID: Luma (PiAPI) $0.20 (1080p) → FAL MiniMax $0.50
  */
 
@@ -23,26 +24,29 @@ const supabase = createClient(
 
 /**
  * Provider configurations with CORRECT API formats
+ * 
+ * CRITICAL: Updated from Wan-2.1 to Wan-2.2-t2v-fast
+ * Reason: Wan-2.1 model version no longer exists on Replicate
  */
 const PROVIDERS = {
-  // Replicate Wan-2.1 - Cheapest option ($0.0008/video)
-  // FIX: Correct Replicate API format - use model name, not version string
+  // Replicate Wan-2.2 - Cheapest option (~$0.001/video)
+  // UPDATED: Changed from wan-2.1 to wan-2.2-t2v-fast
   wan: {
-    name: 'Wan-2.1',
+    name: 'Wan-2.2',
     tier: 'free',
-    cost: 0.0008,
-    createUrl: 'https://api.replicate.com/v1/predictions',
+    cost: 0.001,
+    createUrl: 'https://api.replicate.com/v1/models/wan-video/wan-2.2-t2v-fast/predictions',
     getKey: () => process.env.REPLICATE_KEY,
-    authHeader: (key) => `Token ${key}`,
-    // CRITICAL FIX: Replicate requires specific format
+    authHeader: (key) => `Bearer ${key}`,
+    // CRITICAL FIX: Updated API format for wan-2.2-t2v-fast
     buildBody: (prompt, duration, resolution) => ({
-      // Use the correct version hash for wan-2.1 model
-      version: 'wan-lab/wan2.1-t2v-1.3b:e8c37be16be5e3bb950f55e0d73d1e87e4be5a47',
       input: {
         prompt: prompt,
-        num_frames: Math.min(duration, 10) * 24, // 24fps, max 10s = 240 frames
-        guidance_scale: 7.5,
-        num_inference_steps: 50
+        negative_prompt: "blurry, low quality, distorted, deformed",
+        num_frames: Math.min(duration, 5) * 16, // Wan-2.2 uses 16fps, max 5s
+        guidance_scale: 5.0,
+        num_inference_steps: 30,
+        enable_safety_checker: false
       }
     }),
     extractTaskId: (response) => response?.id,
@@ -86,10 +90,15 @@ const PROVIDERS = {
       if (status === 'failed' || status === 'error') return 'failed';
       return 'processing';
     },
-    // CRITICAL: PiAPI returns video_url in data.output.video_url
+    // CRITICAL FIX: PiAPI Luma returns video_url in nested structure
+    // Actual response: {"data":{"output":{"video":{"url":"..."}, "video_raw":{"url":"..."}}}}
     extractVideoUrl: (response) => {
-      return response?.data?.output?.video_url ||
+      return response?.data?.output?.video_raw?.url ||   // Prefer unwatermarked
+             response?.data?.output?.video?.url ||        // Watermarked fallback
+             response?.data?.output?.video_url ||         // Alternative path
              response?.data?.video_url ||
+             response?.output?.video?.url ||
+             response?.output?.video_raw?.url ||
              response?.output?.video_url;
     },
     extractError: (response) => response?.data?.error || response?.error || response?.message
@@ -129,13 +138,23 @@ const PROVIDERS = {
 
 /**
  * Fallback chains - Cost optimized
- * FREE: Wan (cheapest) → Luma (moderate, 768p quality)
+ * FREE: Wan-2.2 (cheapest) → Luma (moderate, 768p quality)
  * PAID: Luma (good quality, 1080p) → FAL MiniMax (expensive backup)
  */
 const FALLBACK_CHAINS = {
   free: ['wan', 'luma'],
   paid: ['luma', 'fal']
 };
+
+/**
+ * CRITICAL FIX for DEP0169:
+ * Parse body using only modern APIs
+ * NEVER access req.query - it triggers internal url.parse()
+ */
+function parseRequestBody(req) {
+  // Use req.body directly - Vercel parses JSON automatically
+  return req.body || {};
+}
 
 /**
  * Make HTTP request with timeout using modern AbortController
@@ -266,7 +285,24 @@ async function createTaskWithFallback(prompt, tier, duration, resolution) {
 }
 
 /**
+ * Generate a unique ID
+ */
+function generateUniqueId() {
+  // Use crypto.randomUUID if available (Node 19+, modern browsers)
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  // Fallback
+  return `gen-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+}
+
+/**
  * Main Handler
+ * 
+ * POST /api/generate
+ * Body: { prompt, userId, tier, length, testMode }
+ * 
+ * testMode: When true, skips AdMob and enables testing
  */
 export default async function handler(req, res) {
   // CORS
@@ -285,7 +321,15 @@ export default async function handler(req, res) {
   const startTime = Date.now();
 
   try {
-    const { prompt, userId, tier = 'free', length = 10 } = req.body || {};
+    // CRITICAL: Parse body directly, avoid req.query
+    const body = parseRequestBody(req);
+    const { 
+      prompt, 
+      userId, 
+      tier = 'free', 
+      length = 10,
+      testMode = false  // NEW: AdMob prevention for tests
+    } = body;
 
     // Validate
     if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
@@ -297,12 +341,14 @@ export default async function handler(req, res) {
     }
 
     // Determine duration and resolution based on tier
-    const duration = tier === 'free' ? Math.min(length, 10) : Math.min(length, 30);
+    // Wan-2.2 supports max 5s, so cap free tier at 5s
+    const duration = tier === 'free' ? Math.min(length, 5) : Math.min(length, 30);
     const resolution = tier === 'free' ? '768p' : '1080p';
 
     console.log(`\n========== New Generation ==========`);
     console.log(`User: ${userId}, Tier: ${tier}, Duration: ${duration}s, Resolution: ${resolution}`);
     console.log(`Prompt: ${prompt.slice(0, 100)}...`);
+    console.log(`TestMode: ${testMode}`);
 
     // Get user from database
     const { data: user, error: userError } = await supabase
@@ -332,9 +378,9 @@ export default async function handler(req, res) {
       user.free_used = 0;
     }
 
-    // Check free quota
+    // Check free quota (skip in test mode)
     const FREE_LIMIT = 10;
-    if (tier === 'free' && (user.free_used || 0) >= FREE_LIMIT) {
+    if (!testMode && tier === 'free' && (user.free_used || 0) >= FREE_LIMIT) {
       return res.status(402).json({ 
         error: 'Free limit reached',
         message: `You've used all ${FREE_LIMIT} free clips. Upgrade to Pro for 120 HD clips!`,
@@ -347,7 +393,7 @@ export default async function handler(req, res) {
     const taskResult = await createTaskWithFallback(prompt, tier, duration, resolution);
 
     // Generate unique ID for this generation
-    const generationId = crypto.randomUUID ? crypto.randomUUID() : `gen-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const generationId = generateUniqueId();
 
     // CRITICAL: Save to Supabase immediately
     const { error: insertError } = await supabase
@@ -366,6 +412,7 @@ export default async function handler(req, res) {
         status: 'processing',
         cost: taskResult.cost,
         cost_usd: taskResult.cost,
+        test_mode: testMode,
         created_at: new Date().toISOString(),
         started_at: new Date().toISOString()
       });
@@ -375,17 +422,19 @@ export default async function handler(req, res) {
       // Continue anyway - task is running
     }
 
-    // Increment usage
-    if (tier === 'free') {
-      await supabase
-        .from('users')
-        .update({ free_used: (user.free_used || 0) + 1 })
-        .eq('id', userId);
-    } else {
-      await supabase
-        .from('users')
-        .update({ paid_used: (user.paid_used || 0) + 1 })
-        .eq('id', userId);
+    // Increment usage (skip in test mode)
+    if (!testMode) {
+      if (tier === 'free') {
+        await supabase
+          .from('users')
+          .update({ free_used: (user.free_used || 0) + 1 })
+          .eq('id', userId);
+      } else {
+        await supabase
+          .from('users')
+          .update({ paid_used: (user.paid_used || 0) + 1 })
+          .eq('id', userId);
+      }
     }
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -402,11 +451,12 @@ export default async function handler(req, res) {
       tier,
       duration,
       resolution,
-      needsAd: tier === 'free',
-      remainingFree: tier === 'free' ? FREE_LIMIT - ((user.free_used || 0) + 1) : null,
+      needsAd: tier === 'free' && !testMode,  // Skip ad in test mode
+      testMode,
+      remainingFree: tier === 'free' ? FREE_LIMIT - ((user.free_used || 0) + (testMode ? 0 : 1)) : null,
       message: 'Video generation started. Poll /api/poll for status.',
       pollUrl: `/api/poll?generationId=${generationId}`,
-      estimatedTime: '180-300 seconds'
+      estimatedTime: taskResult.provider === 'wan' ? '60-120 seconds' : '180-300 seconds'
     });
 
   } catch (error) {

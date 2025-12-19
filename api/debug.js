@@ -1,9 +1,11 @@
 /**
- * NeoClip 340 - Debug Endpoint v3.4.2
+ * NeoClip 340 - Debug Endpoint v3.4.3
  * Test provider connections and see response formats
  * 
- * CRITICAL FIXES v3.4.2:
+ * CRITICAL FIXES v3.4.3:
  * - FIXED: DEP0169 - Completely avoid req.query access
+ * - UPDATED: Wan-2.1 → Wan-2.2-t2v-fast (old model no longer exists)
+ * - UPDATED: Correct Luma video URL extraction paths
  * - Uses ONLY WHATWG URL API for query parsing
  * 
  * GET /api/debug - Show configured providers
@@ -42,12 +44,13 @@ export default async function handler(req, res) {
   if (req.method === 'GET') {
     const providers = {
       replicate: {
-        name: 'Wan-2.1',
+        name: 'Wan-2.2',
+        model: 'wan-video/wan-2.2-t2v-fast',
         configured: !!process.env.REPLICATE_KEY,
         keyPrefix: process.env.REPLICATE_KEY?.slice(0, 8) + '...',
-        endpoint: 'https://api.replicate.com/v1/predictions',
+        endpoint: 'https://api.replicate.com/v1/models/wan-video/wan-2.2-t2v-fast/predictions',
         tier: 'free (primary)',
-        cost: '$0.0008/video'
+        cost: '~$0.001/video'
       },
       luma: {
         name: 'Luma (PiAPI)',
@@ -55,7 +58,8 @@ export default async function handler(req, res) {
         keyPrefix: process.env.PIAPI_KEY?.slice(0, 8) + '...',
         endpoint: 'https://api.piapi.ai/api/v1/task',
         tier: 'free (fallback), paid (primary)',
-        cost: '$0.20/video'
+        cost: '$0.20/video',
+        videoUrlPath: 'data.output.video_raw.url or data.output.video.url'
       },
       fal: {
         name: 'MiniMax (FAL)',
@@ -73,23 +77,24 @@ export default async function handler(req, res) {
 
     // Updated fallback chains info
     const fallbackChains = {
-      free: ['Wan-2.1 ($0.0008)', 'Luma ($0.20)'],
+      free: ['Wan-2.2 (~$0.001)', 'Luma ($0.20)'],
       paid: ['Luma ($0.20)', 'MiniMax-FAL ($0.50)']
     };
 
     return res.status(200).json({
-      message: 'NeoClip 340 Debug Info v3.4.2',
+      message: 'NeoClip 340 Debug Info v3.4.3',
       timestamp: new Date().toISOString(),
-      version: '3.4.2',
+      version: '3.4.3',
       providers,
       fallbackChains,
       environment: process.env.NODE_ENV || 'production',
       nodeVersion: process.version,
       fixes: [
         'DEP0169 FIXED: Avoid req.query access completely',
-        'Video URL extraction: Correct Luma data.output.video_url path',
-        'Wan-2.1: Corrected Replicate API format',
-        'All APIs use WHATWG URL API only'
+        'Video URL extraction: Handle nested data.output.video.url and data.output.video_raw.url paths',
+        'Wan model UPDATED: Changed from Wan-2.1 to Wan-2.2-t2v-fast (old version no longer exists)',
+        'All APIs use WHATWG URL API only',
+        'Added testMode support for AdMob prevention'
       ]
     });
   }
@@ -104,15 +109,22 @@ export default async function handler(req, res) {
 
     const configs = {
       replicate: {
-        url: 'https://api.replicate.com/v1/predictions',
+        name: 'Wan-2.2',
+        url: 'https://api.replicate.com/v1/models/wan-video/wan-2.2-t2v-fast/predictions',
         key: process.env.REPLICATE_KEY,
-        authHeader: `Token ${process.env.REPLICATE_KEY}`,
+        authHeader: `Bearer ${process.env.REPLICATE_KEY}`,
         body: {
-          version: 'wan-lab/wan2.1-t2v-1.3b:e8c37be16be5e3bb950f55e0d73d1e87e4be5a47',
-          input: { prompt, num_frames: 240, guidance_scale: 7.5 }
+          input: { 
+            prompt, 
+            negative_prompt: "blurry, low quality",
+            num_frames: 80,
+            guidance_scale: 5.0,
+            num_inference_steps: 30
+          }
         }
       },
       luma: {
+        name: 'Luma (PiAPI)',
         url: 'https://api.piapi.ai/api/v1/task',
         key: process.env.PIAPI_KEY,
         authHeader: `Bearer ${process.env.PIAPI_KEY}`,
@@ -123,6 +135,7 @@ export default async function handler(req, res) {
         }
       },
       fal: {
+        name: 'MiniMax (FAL)',
         url: 'https://queue.fal.run/fal-ai/minimax/video-01',
         key: process.env.FAL_KEY,
         authHeader: `Key ${process.env.FAL_KEY}`,
@@ -140,7 +153,7 @@ export default async function handler(req, res) {
     }
 
     try {
-      console.log(`[DEBUG] Testing ${provider}...`);
+      console.log(`[DEBUG] Testing ${provider} (${config.name})...`);
       console.log(`[DEBUG] URL: ${config.url}`);
       console.log(`[DEBUG] Body:`, JSON.stringify(config.body));
 
@@ -170,6 +183,7 @@ export default async function handler(req, res) {
 
       return res.status(200).json({
         provider,
+        providerName: config.name,
         test: 'create_task',
         success: response.ok,
         status,
