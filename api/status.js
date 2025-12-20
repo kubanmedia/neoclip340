@@ -1,34 +1,19 @@
 /**
- * NeoClip 340 - Generation Status API v3.4.3
- * Check the status of a video generation task
+ * NeoClip 340 - Status API v3.5.0
  * 
- * CRITICAL FIXES v3.4.3:
- * - FIXED: DEP0169 - Completely avoid req.query access
- * - Uses ONLY WHATWG URL API for query parsing
- * - Added test_mode field support
+ * Simple status endpoint - no external dependencies
+ * Frontend uses this to check generation history
  * 
- * SECURITY: All sensitive keys are stored in Vercel Environment Variables
+ * GET /api/status?userId=xxx - Get user's generations (from localStorage via frontend)
+ * GET /api/status?taskId=xxx - Get specific task status
  */
-
-import { createClient } from '@supabase/supabase-js';
-
-// Environment variables
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
-
-const getSupabaseClient = () => {
-  return createClient(SUPABASE_URL, SUPABASE_KEY);
-};
 
 /**
  * CRITICAL FIX for DEP0169:
  * Parse query parameters using ONLY WHATWG URL API
- * NEVER access req.query - it triggers internal url.parse() in Vercel/Node
  */
 function getQueryParams(req) {
   try {
-    // ALWAYS use WHATWG URL API, NEVER req.query
-    // req.query access triggers url.parse() internally in Vercel's request handling
     const host = req.headers?.host || req.headers?.['x-forwarded-host'] || 'localhost';
     const protocol = req.headers?.['x-forwarded-proto'] || 'https';
     const baseUrl = `${protocol}://${host}`;
@@ -40,120 +25,71 @@ function getQueryParams(req) {
   }
 }
 
+const FREE_TIER_LIMIT = 10;
+
 export default async function handler(req, res) {
-  // CORS headers
+  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
-  
+
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
   try {
-    // CRITICAL: Use WHATWG URL API only, avoid req.query (triggers DEP0169)
     const query = getQueryParams(req);
-    const { taskId, userId } = query;
+    const { userId, taskId, freeUsed } = query;
 
-    if (!taskId && !userId) {
-      return res.status(400).json({ 
-        error: 'Either taskId or userId is required' 
-      });
-    }
-
-    const supabase = getSupabaseClient();
-
-    // If taskId provided, get specific generation
+    // If taskId provided, redirect to poll endpoint
     if (taskId) {
-      const { data: generation, error } = await supabase
-        .from('generations')
-        .select('*')
-        .eq('task_id', taskId)
-        .single();
-
-      if (error || !generation) {
-        return res.status(404).json({ error: 'Generation not found' });
-      }
-
       return res.status(200).json({
         success: true,
-        generation: {
-          id: generation.id,
-          taskId: generation.task_id,
-          status: generation.status,
-          videoUrl: generation.video_url,
-          tier: generation.tier,
-          prompt: generation.prompt,
-          model: generation.model,
-          createdAt: generation.created_at,
-          completedAt: generation.completed_at,
-          error: generation.error,
-          testMode: generation.test_mode || false
-        }
+        message: 'Use /api/poll for task status',
+        redirectTo: `/api/poll?generationId=${taskId}`
       });
     }
 
-    // If userId provided, get user's recent generations
+    // User status
     if (userId) {
-      const { data: user, error: userError } = await supabase
-        .from('users')
-        .select('id, tier, free_used, resets_at')
-        .eq('id', userId)
-        .single();
-
-      if (userError || !user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-
-      const { data: generations, error: genError } = await supabase
-        .from('generations')
-        .select('id, task_id, status, video_url, tier, prompt, model, created_at, test_mode')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false })
-        .limit(20);
-
-      if (genError) {
-        return res.status(500).json({ error: 'Failed to fetch generations' });
-      }
-
-      // Calculate remaining days until reset
-      const resetsAt = new Date(user.resets_at);
+      const parsedFreeUsed = parseInt(freeUsed) || 0;
+      const freeRemaining = Math.max(0, FREE_TIER_LIMIT - parsedFreeUsed);
+      
+      // Calculate days until reset
       const now = new Date();
-      const daysUntilReset = Math.ceil((resetsAt - now) / (1000 * 60 * 60 * 24));
+      const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      const daysUntilReset = Math.ceil((nextMonth - now) / (1000 * 60 * 60 * 24));
 
       return res.status(200).json({
         success: true,
         user: {
-          id: user.id,
-          tier: user.tier,
-          freeUsed: user.free_used || 0,
-          freeRemaining: Math.max(0, 10 - (user.free_used || 0)),
-          resetsAt: user.resets_at,
-          daysUntilReset: Math.max(0, daysUntilReset)
+          id: userId,
+          tier: 'free',
+          freeUsed: parsedFreeUsed,
+          freeRemaining: freeRemaining,
+          freeLimit: FREE_TIER_LIMIT,
+          daysUntilReset: daysUntilReset
         },
-        generations: generations.map(g => ({
-          id: g.id,
-          taskId: g.task_id,
-          status: g.status,
-          videoUrl: g.video_url,
-          tier: g.tier,
-          prompt: g.prompt,
-          model: g.model,
-          createdAt: g.created_at,
-          testMode: g.test_mode || false
-        }))
+        // Frontend manages generation history via localStorage
+        generations: [],
+        message: 'Generation history is stored locally in your browser'
       });
     }
 
+    return res.status(400).json({
+      error: 'userId or taskId required',
+      example: '/api/status?userId=xxx'
+    });
+
   } catch (error) {
-    console.error('Status check error:', error);
-    return res.status(500).json({ 
+    console.error('[Status API] Error:', error);
+    return res.status(500).json({
       error: 'Status check failed',
-      message: error.message 
+      message: error.message
     });
   }
 }

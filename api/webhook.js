@@ -1,35 +1,21 @@
 /**
- * NeoClip 340 - Webhook Handler v3.4.1
+ * NeoClip 340 - Webhook Handler v3.5.0
+ * 
  * Receives callbacks from video generation APIs
+ * Currently not used - polling is primary method
  * 
- * CRITICAL FIXES v3.4.1:
- * - Uses Web Crypto API instead of Node's crypto module (Edge-compatible)
- * - Modern Buffer.from() instead of deprecated Buffer constructor
- * - WHATWG URL API for any URL parsing
- * 
- * SECURITY: All sensitive keys are stored in Vercel Environment Variables
+ * CRITICAL: No external dependencies
  */
 
-import { createClient } from '@supabase/supabase-js';
-
-// Environment variables
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
-const getSupabaseClient = () => {
-  return createClient(SUPABASE_URL, SUPABASE_KEY);
-};
-
 /**
- * Verify webhook signature using Web Crypto API (modern, Edge-compatible)
- * Falls back to simple comparison if Web Crypto not available
+ * Verify webhook signature using Web Crypto API
  */
 async function verifySignature(payload, signature, secret) {
-  if (!secret || !signature) return true; // Skip if not configured
+  if (!secret || !signature) return true;
   
   try {
-    // Use Web Crypto API (modern, Edge-compatible)
     const encoder = new TextEncoder();
     const key = await crypto.subtle.importKey(
       'raw',
@@ -49,7 +35,6 @@ async function verifySignature(payload, signature, secret) {
       .map(b => b.toString(16).padStart(2, '0'))
       .join('');
     
-    // Constant-time comparison to prevent timing attacks
     if (signature.length !== expectedSignature.length) return false;
     
     let result = 0;
@@ -60,12 +45,12 @@ async function verifySignature(payload, signature, secret) {
     
   } catch (error) {
     console.warn('Signature verification error:', error.message);
-    return true; // Allow if verification fails (backwards compatible)
+    return true;
   }
 }
 
 export default async function handler(req, res) {
-  // CORS headers
+  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Webhook-Signature');
@@ -81,7 +66,7 @@ export default async function handler(req, res) {
   try {
     const signature = req.headers['x-webhook-signature'];
     
-    // Verify webhook signature if configured
+    // Verify signature if configured
     if (WEBHOOK_SECRET) {
       const isValid = await verifySignature(req.body, signature, WEBHOOK_SECRET);
       if (!isValid) {
@@ -89,79 +74,39 @@ export default async function handler(req, res) {
       }
     }
 
-    const supabase = getSupabaseClient();
     const { 
       taskId, 
       status, 
       videoUrl, 
       error: webhookError,
-      userId,
       source = 'unknown'
-    } = req.body;
+    } = req.body || {};
 
     if (!taskId) {
       return res.status(400).json({ error: 'Task ID is required' });
     }
 
-    // Update generation record
-    const updateData = {
-      status,
-      updated_at: new Date().toISOString()
-    };
+    console.log(`[Webhook] Received: taskId=${taskId}, status=${status}, source=${source}`);
 
+    // Log the webhook (no database needed)
+    // Frontend uses polling, so webhooks are just logged
+    
     if (status === 'completed' && videoUrl) {
-      updateData.video_url = videoUrl;
-      updateData.completed_at = new Date().toISOString();
+      console.log(`[Webhook] ✅ Video completed: ${videoUrl.slice(0, 60)}...`);
     }
 
     if (status === 'failed' && webhookError) {
-      updateData.error = webhookError;
+      console.log(`[Webhook] ❌ Video failed: ${webhookError}`);
     }
-
-    const { error: updateError } = await supabase
-      .from('generations')
-      .update(updateData)
-      .eq('task_id', taskId);
-
-    if (updateError) {
-      console.error('Failed to update generation:', updateError);
-      return res.status(500).json({ error: 'Database update failed' });
-    }
-
-    // If generation failed, rollback user's free usage
-    if (status === 'failed' && userId) {
-      const { data: user } = await supabase
-        .from('users')
-        .select('free_used')
-        .eq('id', userId)
-        .single();
-
-      if (user && user.free_used > 0) {
-        await supabase
-          .from('users')
-          .update({ free_used: user.free_used - 1 })
-          .eq('id', userId);
-      }
-    }
-
-    // Log webhook event
-    await supabase
-      .from('webhook_logs')
-      .insert({
-        task_id: taskId,
-        source,
-        status,
-        payload: JSON.stringify(req.body).substring(0, 5000),
-        created_at: new Date().toISOString()
-      });
 
     return res.status(200).json({ 
       success: true,
-      message: `Webhook processed for task ${taskId}`
+      message: `Webhook processed for task ${taskId}`,
+      note: 'This app uses polling - webhooks are logged but not required'
     });
 
   } catch (error) {
-    console.error('Webhook error:', error);
+    console.error('[Webhook] Error:', error);
     return res.status(500).json({ 
       error: 'Webhook processing failed',
       message: error.message 
